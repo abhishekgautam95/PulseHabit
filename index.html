@@ -1,0 +1,2392 @@
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import {
+  Check,
+  Plus,
+  Flame,
+  Trophy,
+  TrendingUp,
+  Calendar,
+  Search,
+  Filter,
+  Sun,
+  Moon,
+  Volume2,
+  VolumeX,
+  Download,
+  Upload,
+  Trash2,
+  Edit3,
+  Sparkles,
+  Brain,
+  Dumbbell,
+  BookOpen,
+  Heart,
+  Coffee,
+  Code,
+  Music,
+  Zap,
+  CheckCircle2,
+  XCircle,
+  Minus,
+  ChevronRight,
+  ChevronLeft,
+  BarChart3,
+  Layers,
+  Info,
+  RotateCcw,
+  SlidersHorizontal,
+  Award,
+  Clock,
+  ArrowUpRight,
+  ShieldCheck,
+  Terminal,
+  Palette,
+  Cpu,
+  X,
+  AlertTriangle
+} from 'lucide-react';
+
+/**
+ * ============================================================================
+ * DESIGN TOKENS & CONSTANTS
+ * ============================================================================
+ */
+const COLOR_PALETTE = [
+  { id: 'emerald', name: 'Emerald', hex: '#10b981', bg: 'bg-emerald-500', softBg: 'bg-emerald-500/15', text: 'text-emerald-500', border: 'border-emerald-500/30', ring: 'ring-emerald-500' },
+  { id: 'indigo', name: 'Indigo', hex: '#6366f1', bg: 'bg-indigo-500', softBg: 'bg-indigo-500/15', text: 'text-indigo-500', border: 'border-indigo-500/30', ring: 'ring-indigo-500' },
+  { id: 'amber', name: 'Amber', hex: '#f59e0b', bg: 'bg-amber-500', softBg: 'bg-amber-500/15', text: 'text-amber-500', border: 'border-amber-500/30', ring: 'ring-amber-500' },
+  { id: 'rose', name: 'Rose', hex: '#f43f5e', bg: 'bg-rose-500', softBg: 'bg-rose-500/15', text: 'text-rose-500', border: 'border-rose-500/30', ring: 'ring-rose-500' },
+  { id: 'cyan', name: 'Cyan', hex: '#06b6d4', bg: 'bg-cyan-500', softBg: 'bg-cyan-500/15', text: 'text-cyan-500', border: 'border-cyan-500/30', ring: 'ring-cyan-500' },
+  { id: 'violet', name: 'Violet', hex: '#8b5cf6', bg: 'bg-violet-500', softBg: 'bg-violet-500/15', text: 'text-violet-500', border: 'border-violet-500/30', ring: 'ring-violet-500' },
+];
+
+const CATEGORIES = [
+  { id: 'Deep Work', label: 'Deep Work', icon: 'Brain' },
+  { id: 'Fitness', label: 'Fitness', icon: 'Dumbbell' },
+  { id: 'Mindfulness', label: 'Mindfulness', icon: 'Sparkles' },
+  { id: 'Learning', label: 'Learning', icon: 'BookOpen' },
+  { id: 'Health', label: 'Health', icon: 'Heart' },
+  { id: 'Engineering', label: 'Engineering', icon: 'Code' },
+];
+
+const ICON_MAP = {
+  Brain,
+  Dumbbell,
+  Sparkles,
+  BookOpen,
+  Heart,
+  Code,
+  Coffee,
+  Music,
+  Zap,
+  Flame,
+  Trophy,
+  ShieldCheck
+};
+
+const DAYS_OF_WEEK = [
+  { index: 0, short: 'Sun', letter: 'S' },
+  { index: 1, short: 'Mon', letter: 'M' },
+  { index: 2, short: 'Tue', letter: 'T' },
+  { index: 3, short: 'Wed', letter: 'W' },
+  { index: 4, short: 'Thu', letter: 'T' },
+  { index: 5, short: 'Fri', letter: 'F' },
+  { index: 6, short: 'Sat', letter: 'S' },
+];
+
+const STORAGE_KEY = 'pulsehabit_prod_state_v1';
+
+/**
+ * ============================================================================
+ * DATE & SCHEDULE-AWARE STREAK UTILITIES
+ * ============================================================================
+ */
+// Format local Date object to YYYY-MM-DD consistently
+const toDateKey = (date) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+// Return a new Date shifted by `offsetDays` from `baseDate`
+const addDays = (baseDate, offsetDays) => {
+  const d = new Date(baseDate);
+  d.setHours(12, 0, 0, 0);
+  d.setDate(d.getDate() + offsetDays);
+  return d;
+};
+
+// Generate array of Date objects for the last N days ending on `endDate`
+const getRollingDays = (count, endDate = new Date()) => {
+  const days = [];
+  for (let i = count - 1; i >= 0; i--) {
+    days.push(addDays(endDate, -i));
+  }
+  return days;
+};
+
+/**
+ * Core Schedule-Aware Streak & Metrics Calculation Engine
+ * - Unscheduled rest days do NOT break a streak.
+ * - Today being incomplete does NOT break an active streak from yesterday.
+ * - Returns: { currentStreak, longestStreak, completionRate30d, totalCompleted }
+ */
+const calculateHabitMetrics = (habit, todayDate = new Date()) => {
+  const freqSet = new Set(habit.frequencyDays || [0, 1, 2, 3, 4, 5, 6]);
+  const logs = habit.logs || {};
+  const todayKey = toDateKey(todayDate);
+
+  // 1. Calculate Current Streak (walking backwards from today up to 365 days)
+  let currentStreak = 0;
+  for (let i = 0; i < 365; i++) {
+    const checkDate = addDays(todayDate, -i);
+    const key = toDateKey(checkDate);
+    const dayOfWeek = checkDate.getDay();
+    const isScheduled = freqSet.has(dayOfWeek);
+    const isCompleted = !!logs[key];
+
+    if (isCompleted) {
+      currentStreak++;
+    } else if (isScheduled) {
+      // If today is scheduled and not yet completed, don't break streak yet—keep checking yesterday
+      if (key === todayKey) {
+        continue;
+      }
+      // Missed a past scheduled day -> streak ends
+      break;
+    }
+    // If not scheduled and not completed, it's a planned rest day -> bridge across it transparently
+  }
+
+  // 2. Calculate Longest Streak & 30-Day Completion Rate
+  let longestStreak = 0;
+  let runningStreak = 0;
+  let scheduledLast30 = 0;
+  let completedLast30 = 0;
+
+  // Evaluate over the past 180 days chronologically
+  for (let i = 180; i >= 0; i--) {
+    const checkDate = addDays(todayDate, -i);
+    const key = toDateKey(checkDate);
+    const dayOfWeek = checkDate.getDay();
+    const isScheduled = freqSet.has(dayOfWeek);
+    const isCompleted = !!logs[key];
+
+    if (i < 30) {
+      if (isScheduled) {
+        scheduledLast30++;
+        if (isCompleted) completedLast30++;
+      } else if (isCompleted) {
+        // Bonus completion on unscheduled day
+        completedLast30++;
+      }
+    }
+
+    if (isCompleted) {
+      runningStreak++;
+      if (runningStreak > longestStreak) longestStreak = runningStreak;
+    } else if (isScheduled && key !== todayKey) {
+      runningStreak = 0;
+    }
+  }
+
+  longestStreak = Math.max(longestStreak, currentStreak);
+  const completionRate30d = scheduledLast30 > 0
+    ? Math.min(100, Math.round((completedLast30 / scheduledLast30) * 100))
+    : 100;
+
+  const totalCompleted = Object.values(logs).filter(Boolean).length;
+
+  return {
+    currentStreak,
+    longestStreak,
+    completionRate30d,
+    totalCompleted,
+    scheduledLast30,
+    completedLast30
+  };
+};
+
+/**
+ * Generate Realistic Seed Habits for First-Time Visitors
+ */
+const createDefaultHabits = (today = new Date()) => {
+  const buildLogs = (patternFn) => {
+    const logs = {};
+    for (let i = 60; i >= 0; i--) {
+      const d = addDays(today, -i);
+      const key = toDateKey(d);
+      if (patternFn(i, d.getDay())) {
+        logs[key] = true;
+      }
+    }
+    return logs;
+  };
+
+  return [
+    {
+      id: 'habit-1',
+      title: '90m Uninterrupted Deep Work',
+      description: 'Zero Slack/email before 10:30 AM. Focus on core architecture or high-leverage problem solving.',
+      category: 'Deep Work',
+      color: 'indigo',
+      icon: 'Brain',
+      frequencyDays: [1, 2, 3, 4, 5], // Weekdays
+      logs: buildLogs((daysAgo, dow) => {
+        if (dow === 0 || dow === 6) return false;
+        if (daysAgo === 0) return true; // Completed today
+        if (daysAgo < 14) return true; // Solid 2-week weekday streak
+        return daysAgo % 3 !== 0;
+      }),
+      createdAt: toDateKey(addDays(today, -60))
+    },
+    {
+      id: 'habit-2',
+      title: 'Zone 2 Cardio & Mobility (45m)',
+      description: 'Maintain heart rate at 135-148 BPM or complete full-body strength circuit.',
+      category: 'Fitness',
+      color: 'emerald',
+      icon: 'Dumbbell',
+      frequencyDays: [1, 3, 5, 6], // Mon, Wed, Fri, Sat
+      logs: buildLogs((daysAgo, dow) => {
+        if (![1, 3, 5, 6].includes(dow)) return false;
+        if (daysAgo === 0) return true;
+        if (daysAgo <= 18) return true;
+        return daysAgo % 4 !== 0;
+      }),
+      createdAt: toDateKey(addDays(today, -60))
+    },
+    {
+      id: 'habit-3',
+      title: 'Mindful Breathwork & Journaling',
+      description: '10 minutes of box breathing + 3 gratitude/priority bullets before checking screens.',
+      category: 'Mindfulness',
+      color: 'amber',
+      icon: 'Sparkles',
+      frequencyDays: [0, 1, 2, 3, 4, 5, 6], // Daily
+      logs: buildLogs((daysAgo) => {
+        if (daysAgo === 0) return false; // Pending today so user can click it!
+        if (daysAgo <= 9) return true;
+        return daysAgo % 5 !== 0;
+      }),
+      createdAt: toDateKey(addDays(today, -60))
+    },
+    {
+      id: 'habit-4',
+      title: 'Read 25 Pages (Technical / Non-Fiction)',
+      description: 'Active reading with Zettelkasten synthesis notes in Obsidian.',
+      category: 'Learning',
+      color: 'violet',
+      icon: 'BookOpen',
+      frequencyDays: [0, 1, 2, 3, 4, 5, 6], // Daily
+      logs: buildLogs((daysAgo) => {
+        if (daysAgo === 0) return false; // Pending today
+        if (daysAgo === 2) return false; // Missed 2 days ago
+        return daysAgo % 3 !== 0;
+      }),
+      createdAt: toDateKey(addDays(today, -60))
+    },
+    {
+      id: 'habit-5',
+      title: 'Hydration Target (3.0L Electrolytes)',
+      description: '500ml immediately upon waking + steady intake throughout work blocks.',
+      category: 'Health',
+      color: 'cyan',
+      icon: 'Heart',
+      frequencyDays: [0, 1, 2, 3, 4, 5, 6],
+      logs: buildLogs((daysAgo) => {
+        if (daysAgo === 0) return true;
+        if (daysAgo <= 21) return true;
+        return daysAgo % 4 !== 0;
+      }),
+      createdAt: toDateKey(addDays(today, -60))
+    },
+    {
+      id: 'habit-6',
+      title: 'Open Source / System Design Study',
+      description: 'Review distributed systems papers or ship 1 PR to personal lab repo.',
+      category: 'Engineering',
+      color: 'rose',
+      icon: 'Code',
+      frequencyDays: [2, 4, 6], // Tue, Thu, Sat
+      logs: buildLogs((daysAgo, dow) => {
+        if (![2, 4, 6].includes(dow)) return false;
+        if (daysAgo === 0) return false;
+        return daysAgo % 2 === 0;
+      }),
+      createdAt: toDateKey(addDays(today, -60))
+    }
+  ];
+};
+
+/**
+ * ============================================================================
+ * WEB AUDIO SYNTHESIZER (Zero External Dependencies)
+ * ============================================================================
+ */
+class SoundEngine {
+  constructor() {
+    this.ctx = null;
+  }
+
+  init() {
+    if (!this.ctx && typeof window !== 'undefined') {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (AudioCtx) this.ctx = new AudioCtx();
+    }
+    if (this.ctx && this.ctx.state === 'suspended') {
+      this.ctx.resume();
+    }
+  }
+
+  playCheck(isCompleted = true, isAllDone = false) {
+    try {
+      this.init();
+      if (!this.ctx) return;
+
+      const now = this.ctx.currentTime;
+
+      if (isCompleted) {
+        // Uplifting harmonic arpeggio chime
+        const notes = isAllDone ? [523.25, 659.25, 783.99, 1046.5] : [587.33, 880];
+        notes.forEach((freq, idx) => {
+          const osc = this.ctx.createOscillator();
+          const gain = this.ctx.createGain();
+          osc.type = 'triangle';
+          osc.frequency.setValueAtTime(freq, now + idx * 0.055);
+
+          gain.gain.setValueAtTime(0.001, now + idx * 0.055);
+          gain.gain.exponentialRampToValueAtTime(0.14, now + idx * 0.055 + 0.02);
+          gain.gain.exponentialRampToValueAtTime(0.0001, now + idx * 0.055 + 0.28);
+
+          osc.connect(gain);
+          gain.connect(this.ctx.destination);
+          osc.start(now + idx * 0.055);
+          osc.stop(now + idx * 0.055 + 0.3);
+        });
+      } else {
+        // Subtle soft woodblock pop for unchecking
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(320, now);
+        osc.frequency.exponentialRampToValueAtTime(180, now + 0.09);
+
+        gain.gain.setValueAtTime(0.08, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.1);
+
+        osc.connect(gain);
+        gain.connect(this.ctx.destination);
+        osc.start(now);
+        osc.stop(now + 0.11);
+      }
+    } catch {
+      // Ignore audio errors if browser blocks autoplay
+    }
+  }
+}
+
+const soundEngine = new SoundEngine();
+
+/**
+ * ============================================================================
+ * CONFETTI PARTICLE OVERLAY (Canvas 2D)
+ * ============================================================================
+ */
+const ConfettiCanvas = ({ bursts }) => {
+  const canvasRef = useRef(null);
+  const particlesRef = useRef([]);
+
+  useEffect(() => {
+    if (!bursts.length) return;
+    const latest = bursts[bursts.length - 1];
+    const colors = ['#10b981', '#6366f1', '#f59e0b', '#f43f5e', '#06b6d4', '#a855f7'];
+
+    const count = latest.intensity || 28;
+    for (let i = 0; i < count; i++) {
+      const angle = (Math.PI * 2 * i) / count + (Math.random() - 0.5) * 0.5;
+      const speed = 2.5 + Math.random() * 5.5;
+      particlesRef.current.push({
+        x: latest.x,
+        y: latest.y,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed - 2.2,
+        size: 4 + Math.random() * 4.5,
+        color: latest.colorHex || colors[Math.floor(Math.random() * colors.length)],
+        alpha: 1,
+        rotation: Math.random() * 360,
+        vRot: (Math.random() - 0.5) * 12,
+        shape: Math.random() > 0.4 ? 'rect' : 'circle'
+      });
+    }
+  }, [bursts]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    let animId;
+
+    const resize = () => {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+    };
+    resize();
+    window.addEventListener('resize', resize);
+
+    const render = () => {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      const list = particlesRef.current;
+
+      for (let i = list.length - 1; i >= 0; i--) {
+        const p = list[i];
+        p.x += p.vx;
+        p.y += p.vy;
+        p.vy += 0.18; // gravity
+        p.vx *= 0.98; // air resistance
+        p.alpha -= 0.018;
+        p.rotation += p.vRot;
+
+        if (p.alpha <= 0) {
+          list.splice(i, 1);
+          continue;
+        }
+
+        ctx.save();
+        ctx.globalAlpha = Math.max(0, p.alpha);
+        ctx.translate(p.x, p.y);
+        ctx.rotate((p.rotation * Math.PI) / 180);
+        ctx.fillStyle = p.color;
+
+        if (p.shape === 'rect') {
+          ctx.fillRect(-p.size / 2, -p.size / 2, p.size, p.size * 0.65);
+        } else {
+          ctx.beginPath();
+          ctx.arc(0, 0, p.size / 2, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        ctx.restore();
+      }
+
+      animId = requestAnimationFrame(render);
+    };
+
+    animId = requestAnimationFrame(render);
+    return () => {
+      cancelAnimationFrame(animId);
+      window.removeEventListener('resize', resize);
+    };
+  }, []);
+
+  return (
+    <canvas
+      ref={canvasRef}
+      className="fixed inset-0 pointer-events-none z-50"
+      aria-hidden="true"
+    />
+  );
+};
+
+/**
+ * ============================================================================
+ * MAIN APPLICATION COMPONENT
+ * ============================================================================
+ */
+export default function App() {
+  // --- Persistent State Initialization ---
+  const [habits, setHabits] = useState(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch (e) {
+      console.error('Failed to load habits from localStorage:', e);
+    }
+    return createDefaultHabits(new Date());
+  });
+
+  const [theme, setTheme] = useState(() => {
+    try {
+      return localStorage.getItem('pulsehabit_theme') || 'dark';
+    } catch {
+      return 'dark';
+    }
+  });
+
+  const [soundEnabled, setSoundEnabled] = useState(true);
+  const [activeTab, setActiveTab] = useState('dashboard'); // 'dashboard' | 'analytics' | 'architecture'
+  const [searchQuery, setSearchQuery] = useState('');
+  const [selectedCategory, setSelectedCategory] = useState('All');
+  const [statusFilter, setStatusFilter] = useState('All'); // 'All' | 'ScheduledToday' | 'CompletedToday' | 'PendingToday'
+  const [weekOffset, setWeekOffset] = useState(0); // 0 = rolling 7 days ending today
+
+  // Modal & Drawer States
+  const [isHabitModalOpen, setIsHabitModalOpen] = useState(false);
+  const [editingHabit, setEditingHabit] = useState(null);
+  const [habitToDelete, setHabitToDelete] = useState(null);
+  const [toast, setToast] = useState(null);
+  const [confettiBursts, setConfettiBursts] = useState([]);
+
+  const fileInputRef = useRef(null);
+  const today = useMemo(() => new Date(), []);
+  const todayKey = useMemo(() => toDateKey(today), [today]);
+  const todayDow = today.getDay();
+
+  // Save habits to localStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(habits));
+    } catch (e) {
+      console.error('Failed to persist habits:', e);
+    }
+  }, [habits]);
+
+  // Save theme to localStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem('pulsehabit_theme', theme);
+    } catch {
+      // Ignore storage error
+    }
+  }, [theme]);
+
+  // Helper to show temporary accessible toast notification
+  const triggerToast = useCallback((message, type = 'success') => {
+    setToast({ id: Date.now(), message, type });
+  }, []);
+
+  useEffect(() => {
+    if (!toast) return;
+    const timer = setTimeout(() => setToast(null), 3200);
+    return () => clearTimeout(timer);
+  }, [toast]);
+
+  // Global Keyboard Shortcuts ('N' -> New Habit, 'T' -> Theme Toggle, '/' -> Search)
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      const tag = document.activeElement?.tagName?.toLowerCase();
+      const isInputFocused = tag === 'input' || tag === 'textarea' || tag === 'select';
+      if (isInputFocused || isHabitModalOpen || habitToDelete) return;
+
+      if (e.key === 'n' || e.key === 'N') {
+        e.preventDefault();
+        setEditingHabit(null);
+        setIsHabitModalOpen(true);
+      } else if (e.key === 't' || e.key === 'T') {
+        e.preventDefault();
+        setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'));
+      } else if (e.key === '1') {
+        setActiveTab('dashboard');
+      } else if (e.key === '2') {
+        setActiveTab('analytics');
+      } else if (e.key === '3') {
+        setActiveTab('architecture');
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isHabitModalOpen, habitToDelete]);
+
+  // --- Computed Rolling Dates for the 7-Day Matrix ---
+  const anchorEndDate = useMemo(() => addDays(today, weekOffset * 7), [today, weekOffset]);
+  const rolling7Days = useMemo(() => getRollingDays(7, anchorEndDate), [anchorEndDate]);
+  const rolling28Days = useMemo(() => getRollingDays(28, today), [today]);
+
+  // --- Enrich Habits with Real-Time Metrics ---
+  const enrichedHabits = useMemo(() => {
+    return habits.map((h) => {
+      const metrics = calculateHabitMetrics(h, today);
+      const isScheduledToday = (h.frequencyDays || []).includes(todayDow);
+      const isCompletedToday = !!(h.logs && h.logs[todayKey]);
+      const colorObj = COLOR_PALETTE.find((c) => c.id === h.color) || COLOR_PALETTE[0];
+      return {
+        ...h,
+        metrics,
+        isScheduledToday,
+        isCompletedToday,
+        colorObj
+      };
+    });
+  }, [habits, today, todayDow, todayKey]);
+
+  // --- Filtered Habits ---
+  const filteredHabits = useMemo(() => {
+    return enrichedHabits.filter((h) => {
+      const matchesSearch =
+        h.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        (h.description || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+        h.category.toLowerCase().includes(searchQuery.toLowerCase());
+
+      const matchesCategory = selectedCategory === 'All' || h.category === selectedCategory;
+
+      let matchesStatus = true;
+      if (statusFilter === 'ScheduledToday') matchesStatus = h.isScheduledToday;
+      if (statusFilter === 'CompletedToday') matchesStatus = h.isCompletedToday;
+      if (statusFilter === 'PendingToday') matchesStatus = h.isScheduledToday && !h.isCompletedToday;
+
+      return matchesSearch && matchesCategory && matchesStatus;
+    });
+  }, [enrichedHabits, searchQuery, selectedCategory, statusFilter]);
+
+  // --- Global Dashboard KPIs ---
+  const dashboardKPIs = useMemo(() => {
+    const scheduledTodayList = enrichedHabits.filter((h) => h.isScheduledToday);
+    const completedScheduledToday = scheduledTodayList.filter((h) => h.isCompletedToday).length;
+    const bonusCompletedToday = enrichedHabits.filter((h) => !h.isScheduledToday && h.isCompletedToday).length;
+
+    const todayTotalTarget = scheduledTodayList.length;
+    const todayPercentage = todayTotalTarget > 0
+      ? Math.round((completedScheduledToday / todayTotalTarget) * 100)
+      : 100;
+
+    const bestCurrentStreak = enrichedHabits.reduce(
+      (max, h) => (h.metrics.currentStreak > max.streak ? { streak: h.metrics.currentStreak, title: h.title } : max),
+      { streak: 0, title: 'None yet' }
+    );
+
+    const allTimeLongestStreak = enrichedHabits.reduce(
+      (max, h) => (h.metrics.longestStreak > max.streak ? { streak: h.metrics.longestStreak, title: h.title } : max),
+      { streak: 0, title: 'None yet' }
+    );
+
+    const avg30DayRate = enrichedHabits.length > 0
+      ? Math.round(enrichedHabits.reduce((sum, h) => sum + h.metrics.completionRate30d, 0) / enrichedHabits.length)
+      : 0;
+
+    return {
+      completedScheduledToday,
+      bonusCompletedToday,
+      todayTotalTarget,
+      todayPercentage,
+      bestCurrentStreak,
+      allTimeLongestStreak,
+      avg30DayRate
+    };
+  }, [enrichedHabits]);
+
+  // --- Rolling 7-Day Completion Bar Analytics ---
+  const rolling7DayChartData = useMemo(() => {
+    return rolling7Days.map((dateObj) => {
+      const key = toDateKey(dateObj);
+      const dow = dateObj.getDay();
+      let scheduledCount = 0;
+      let completedCount = 0;
+
+      enrichedHabits.forEach((h) => {
+        const isSched = h.frequencyDays.includes(dow);
+        const isDone = !!(h.logs && h.logs[key]);
+        if (isSched) {
+          scheduledCount++;
+          if (isDone) completedCount++;
+        } else if (isDone) {
+          completedCount++;
+        }
+      });
+
+      const pct = scheduledCount > 0 ? Math.min(100, Math.round((completedCount / scheduledCount) * 100)) : 0;
+
+      return {
+        dateKey: key,
+        dayShort: DAYS_OF_WEEK[dow].short,
+        dayNum: dateObj.getDate(),
+        monthShort: dateObj.toLocaleDateString('en-US', { month: 'short' }),
+        isToday: key === todayKey,
+        scheduledCount,
+        completedCount,
+        percentage: pct
+      };
+    });
+  }, [rolling7Days, enrichedHabits, todayKey]);
+
+  // --- Toggle Completion Handler with Optimistic UI, Sound & Confetti ---
+  const handleToggleHabitDay = useCallback(
+    (habitId, dateKey, event) => {
+      let newlyCompleted = false;
+      let habitColorHex = '#10b981';
+
+      setHabits((prev) =>
+        prev.map((h) => {
+          if (h.id !== habitId) return h;
+          const nextLogs = { ...(h.logs || {}) };
+          if (nextLogs[dateKey]) {
+            delete nextLogs[dateKey];
+            newlyCompleted = false;
+          } else {
+            nextLogs[dateKey] = true;
+            newlyCompleted = true;
+          }
+          const cObj = COLOR_PALETTE.find((c) => c.id === h.color);
+          if (cObj) habitColorHex = cObj.hex;
+          return { ...h, logs: nextLogs };
+        })
+      );
+
+      // Compute coordinates for particle burst
+      if (newlyCompleted && event) {
+        const rect = event.currentTarget.getBoundingClientRect();
+        const x = rect.left + rect.width / 2;
+        const y = rect.top + rect.height / 2;
+        setConfettiBursts((b) => [...b.slice(-6), { id: Date.now() + Math.random(), x, y, colorHex: habitColorHex, intensity: 26 }]);
+      }
+
+      if (soundEnabled) {
+        soundEngine.playCheck(newlyCompleted, false);
+      }
+    },
+    [soundEnabled]
+  );
+
+  // --- CRUD Handlers ---
+  const handleSaveHabit = (habitData) => {
+    if (editingHabit) {
+      setHabits((prev) =>
+        prev.map((h) => (h.id === editingHabit.id ? { ...h, ...habitData } : h))
+      );
+      triggerToast(`Updated "${habitData.title}"`);
+    } else {
+      const newHabit = {
+        id: `habit-${Date.now()}`,
+        ...habitData,
+        logs: {},
+        createdAt: todayKey
+      };
+      setHabits((prev) => [newHabit, ...prev]);
+      triggerToast(`Created habit "${habitData.title}"`);
+    }
+    setIsHabitModalOpen(false);
+    setEditingHabit(null);
+  };
+
+  const handleConfirmDelete = () => {
+    if (!habitToDelete) return;
+    const title = habitToDelete.title;
+    setHabits((prev) => prev.filter((h) => h.id !== habitToDelete.id));
+    setHabitToDelete(null);
+    triggerToast(`Deleted "${title}"`, 'info');
+  };
+
+  const handleResetDemoData = () => {
+    const fresh = createDefaultHabits(today);
+    setHabits(fresh);
+    triggerToast('Restored realistic demo dataset');
+  };
+
+  // --- Export / Import JSON ---
+  const handleExportJSON = () => {
+    const payload = {
+      app: 'PulseHabit',
+      version: '1.0.0',
+      exportedAt: new Date().toISOString(),
+      habits
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `pulsehabit-backup-${todayKey}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    triggerToast('Exported habits backup (.json)');
+  };
+
+  const handleImportJSON = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      try {
+        const parsed = JSON.parse(evt.target.result);
+        const importedHabits = Array.isArray(parsed) ? parsed : parsed.habits;
+        if (!Array.isArray(importedHabits)) throw new Error('Invalid JSON structure');
+        setHabits(importedHabits);
+        triggerToast(`Imported ${importedHabits.length} habits successfully`);
+      } catch {
+        triggerToast('Invalid JSON backup file', 'error');
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = '';
+  };
+
+  const isDark = theme === 'dark';
+
+  return (
+    <div
+      className={`min-h-screen transition-colors duration-200 font-sans selection:bg-indigo-500 selection:text-white ${
+        isDark ? 'bg-slate-950 text-slate-100' : 'bg-slate-50 text-slate-900'
+      }`}
+    >
+      {/* Particle Confetti Canvas */}
+      <ConfettiCanvas bursts={confettiBursts} />
+
+      {/* Hidden File Input for JSON Import */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="application/json"
+        onChange={handleImportJSON}
+        className="hidden"
+        aria-label="Import habits JSON file"
+      />
+
+      {/* Accessible Live Toast Notification */}
+      {toast && (
+        <div
+          role="status"
+          aria-live="polite"
+          className={`fixed bottom-5 right-5 z-50 flex items-center gap-2.5 px-4 py-3 rounded-xl shadow-xl border backdrop-blur-md text-sm font-medium transition-all ${
+            toast.type === 'error'
+              ? 'bg-rose-950/90 border-rose-500/40 text-rose-200'
+              : isDark
+              ? 'bg-slate-900/95 border-slate-700/80 text-slate-100'
+              : 'bg-white/95 border-slate-200 text-slate-800'
+          }`}
+        >
+          <CheckCircle2 className={`w-4 h-4 ${toast.type === 'error' ? 'text-rose-400' : 'text-emerald-400'}`} />
+          <span>{toast.message}</span>
+        </div>
+      )}
+
+      {/* =====================================================================
+          TOP NAVIGATION HEADER
+      ===================================================================== */}
+      <header
+        className={`sticky top-0 z-30 border-b backdrop-blur-xl transition-colors ${
+          isDark ? 'bg-slate-950/80 border-slate-800/80' : 'bg-white/80 border-slate-200/90'
+        }`}
+      >
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-4">
+          {/* Brand Logo */}
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-500 via-violet-500 to-emerald-500 p-[1px] shadow-lg shadow-indigo-500/20">
+              <div
+                className={`w-full h-full rounded-[11px] flex items-center justify-center ${
+                  isDark ? 'bg-slate-950' : 'bg-white'
+                }`}
+              >
+                <Flame className="w-5 h-5 text-indigo-500 fill-indigo-500/20" />
+              </div>
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h1 className="font-bold tracking-tight text-base sm:text-lg">PulseHabit</h1>
+                <span className="hidden sm:inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-indigo-500/15 text-indigo-400 border border-indigo-500/25">
+                  v2.4 PRO
+                </span>
+              </div>
+              <p className={`text-xs hidden sm:block ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+                Behavioral Consistency & Streak Engine
+              </p>
+            </div>
+          </div>
+
+          {/* Primary View Switcher Tabs */}
+          <nav
+            aria-label="Workspace Views"
+            className={`flex items-center p-1 rounded-xl border ${
+              isDark ? 'bg-slate-900/90 border-slate-800' : 'bg-slate-100 border-slate-200/80'
+            }`}
+          >
+            {[
+              { id: 'dashboard', label: 'Dashboard', icon: Calendar, shortcut: '1' },
+              { id: 'analytics', label: 'Analytics & Heatmap', icon: BarChart3, shortcut: '2' },
+              { id: 'architecture', label: 'System Specs', icon: Cpu, shortcut: '3' }
+            ].map((tab) => {
+              const Icon = tab.icon;
+              const active = activeTab === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  onClick={() => setActiveTab(tab.id)}
+                  className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium transition-all ${
+                    active
+                      ? isDark
+                        ? 'bg-slate-800 text-white shadow-sm border border-slate-700/70'
+                        : 'bg-white text-slate-900 shadow-sm border border-slate-200/60'
+                      : isDark
+                      ? 'text-slate-400 hover:text-slate-200'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  <Icon className="w-4 h-4" />
+                  <span className="hidden md:inline">{tab.label}</span>
+                  <span className="md:hidden">{tab.label.split(' ')[0]}</span>
+                </button>
+              );
+            })}
+          </nav>
+
+          {/* Action Controls */}
+          <div className="flex items-center gap-2">
+            {/* Sound Toggle */}
+            <button
+              onClick={() => setSoundEnabled((s) => !s)}
+              title={soundEnabled ? 'Mute sound effects' : 'Enable sound effects'}
+              aria-label={soundEnabled ? 'Mute sound effects' : 'Enable sound effects'}
+              className={`p-2 rounded-xl border transition-colors ${
+                isDark
+                  ? 'bg-slate-900 border-slate-800 text-slate-300 hover:bg-slate-800'
+                  : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-100'
+              }`}
+            >
+              {soundEnabled ? <Volume2 className="w-4 h-4 text-emerald-500" /> : <VolumeX className="w-4 h-4 text-slate-400" />}
+            </button>
+
+            {/* Theme Toggle */}
+            <button
+              onClick={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
+              title="Toggle Dark/Light Theme (Shortcut: T)"
+              aria-label="Toggle Dark/Light Theme"
+              className={`p-2 rounded-xl border transition-colors ${
+                isDark
+                  ? 'bg-slate-900 border-slate-800 text-amber-400 hover:bg-slate-800'
+                  : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-100'
+              }`}
+            >
+              {isDark ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+            </button>
+
+            {/* Export / Import Dropdown-style Buttons */}
+            <div className="hidden lg:flex items-center gap-1.5">
+              <button
+                onClick={handleExportJSON}
+                title="Export JSON Backup"
+                className={`flex items-center gap-1.5 px-2.5 py-2 rounded-xl border text-xs font-medium transition-colors ${
+                  isDark
+                    ? 'bg-slate-900 border-slate-800 text-slate-300 hover:bg-slate-800'
+                    : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-100'
+                }`}
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>Export</span>
+              </button>
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                title="Import JSON Backup"
+                className={`flex items-center gap-1.5 px-2.5 py-2 rounded-xl border text-xs font-medium transition-colors ${
+                  isDark
+                    ? 'bg-slate-900 border-slate-800 text-slate-300 hover:bg-slate-800'
+                    : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-100'
+                }`}
+              >
+                <Upload className="w-3.5 h-3.5" />
+                <span>Import</span>
+              </button>
+            </div>
+
+            {/* New Habit CTA */}
+            <button
+              onClick={() => {
+                setEditingHabit(null);
+                setIsHabitModalOpen(true);
+              }}
+              className="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 active:scale-[0.98] text-white font-semibold text-xs sm:text-sm shadow-lg shadow-indigo-600/25 transition-all"
+            >
+              <Plus className="w-4 h-4 stroke-[2.5]" />
+              <span>New Habit</span>
+              <kbd className="hidden sm:inline-block ml-1 px-1.5 py-0.5 text-[10px] rounded bg-indigo-700/80 text-indigo-100 border border-indigo-400/30">
+                N
+              </kbd>
+            </button>
+          </div>
+        </div>
+      </header>
+
+      {/* =====================================================================
+          MAIN WORKSPACE CONTAINER
+      ===================================================================== */}
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8 space-y-6">
+        {/* TOP KPI SUMMARY STRIP (Always visible across tabs for context) */}
+        <section aria-label="Key Performance Metrics" className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          {/* Card 1: Today's Completion Radial Card */}
+          <div
+            className={`p-5 rounded-2xl border flex items-center justify-between transition-all ${
+              isDark ? 'bg-slate-900/70 border-slate-800/90' : 'bg-white border-slate-200/90 shadow-sm'
+            }`}
+          >
+            <div className="space-y-1">
+              <span className={`text-xs font-semibold uppercase tracking-wider ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+                Today&apos;s Target
+              </span>
+              <div className="flex items-baseline gap-2">
+                <span className="text-2xl sm:text-3xl font-bold tracking-tight">
+                  {dashboardKPIs.completedScheduledToday}/{dashboardKPIs.todayTotalTarget}
+                </span>
+                <span className="text-xs font-semibold text-emerald-500">
+                  ({dashboardKPIs.todayPercentage}%)
+                </span>
+              </div>
+              <p className={`text-xs ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+                {dashboardKPIs.todayPercentage === 100
+                  ? 'All scheduled habits complete!'
+                  : `${dashboardKPIs.todayTotalTarget - dashboardKPIs.completedScheduledToday} scheduled remaining`}
+              </p>
+            </div>
+
+            {/* SVG Radial Progress Ring */}
+            <div className="relative w-16 h-16 flex items-center justify-center shrink-0">
+              <svg className="w-full h-full -rotate-90" viewBox="0 0 64 64">
+                <circle
+                  cx="32"
+                  cy="32"
+                  r="26"
+                  fill="none"
+                  strokeWidth="6"
+                  className={isDark ? 'stroke-slate-800' : 'stroke-slate-100'}
+                />
+                <circle
+                  cx="32"
+                  cy="32"
+                  r="26"
+                  fill="none"
+                  strokeWidth="6"
+                  strokeLinecap="round"
+                  strokeDasharray={2 * Math.PI * 26}
+                  strokeDashoffset={2 * Math.PI * 26 * (1 - dashboardKPIs.todayPercentage / 100)}
+                  className="stroke-emerald-500 transition-all duration-500 ease-out"
+                />
+              </svg>
+              <span className="absolute text-xs font-bold">{dashboardKPIs.todayPercentage}%</span>
+            </div>
+          </div>
+
+          {/* Card 2: Active Current Streak */}
+          <div
+            className={`p-5 rounded-2xl border flex items-center justify-between transition-all ${
+              isDark ? 'bg-slate-900/70 border-slate-800/90' : 'bg-white border-slate-200/90 shadow-sm'
+            }`}
+          >
+            <div className="space-y-1 pr-2 overflow-hidden">
+              <span className={`text-xs font-semibold uppercase tracking-wider ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+                Top Active Streak
+              </span>
+              <div className="flex items-baseline gap-1.5">
+                <span className="text-2xl sm:text-3xl font-bold tracking-tight">
+                  {dashboardKPIs.bestCurrentStreak.streak}
+                </span>
+                <span className={`text-xs font-medium ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>days</span>
+              </div>
+              <p className={`text-xs truncate ${isDark ? 'text-slate-400' : 'text-slate-500'}`} title={dashboardKPIs.bestCurrentStreak.title}>
+                {dashboardKPIs.bestCurrentStreak.title}
+              </p>
+            </div>
+            <div className="w-12 h-12 rounded-2xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center shrink-0">
+              <Flame className="w-6 h-6 text-amber-500 fill-amber-500/20" />
+            </div>
+          </div>
+
+          {/* Card 3: All-Time Longest Streak */}
+          <div
+            className={`p-5 rounded-2xl border flex items-center justify-between transition-all ${
+              isDark ? 'bg-slate-900/70 border-slate-800/90' : 'bg-white border-slate-200/90 shadow-sm'
+            }`}
+          >
+            <div className="space-y-1 pr-2 overflow-hidden">
+              <span className={`text-xs font-semibold uppercase tracking-wider ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+                Personal Record
+              </span>
+              <div className="flex items-baseline gap-1.5">
+                <span className="text-2xl sm:text-3xl font-bold tracking-tight">
+                  {dashboardKPIs.allTimeLongestStreak.streak}
+                </span>
+                <span className={`text-xs font-medium ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>days</span>
+              </div>
+              <p className={`text-xs truncate ${isDark ? 'text-slate-400' : 'text-slate-500'}`} title={dashboardKPIs.allTimeLongestStreak.title}>
+                {dashboardKPIs.allTimeLongestStreak.title}
+              </p>
+            </div>
+            <div className="w-12 h-12 rounded-2xl bg-indigo-500/15 border border-indigo-500/30 flex items-center justify-center shrink-0">
+              <Trophy className="w-6 h-6 text-indigo-500" />
+            </div>
+          </div>
+
+          {/* Card 4: 30-Day Consistency Rate */}
+          <div
+            className={`p-5 rounded-2xl border flex items-center justify-between transition-all ${
+              isDark ? 'bg-slate-900/70 border-slate-800/90' : 'bg-white border-slate-200/90 shadow-sm'
+            }`}
+          >
+            <div className="space-y-1">
+              <span className={`text-xs font-semibold uppercase tracking-wider ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+                30-Day Consistency
+              </span>
+              <div className="flex items-baseline gap-2">
+                <span className="text-2xl sm:text-3xl font-bold tracking-tight">{dashboardKPIs.avg30DayRate}%</span>
+                <span className="inline-flex items-center text-xs font-semibold text-emerald-500">
+                  <ArrowUpRight className="w-3.5 h-3.5" />
+                  +4.2%
+                </span>
+              </div>
+              <p className={`text-xs ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+                Schedule-adjusted adherence
+              </p>
+            </div>
+            <div className="w-12 h-12 rounded-2xl bg-cyan-500/15 border border-cyan-500/30 flex items-center justify-center shrink-0">
+              <TrendingUp className="w-6 h-6 text-cyan-500" />
+            </div>
+          </div>
+        </section>
+
+        {/* ===================================================================
+            TAB 1: INTERACTIVE HABIT DASHBOARD
+        =================================================================== */}
+        {activeTab === 'dashboard' && (
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+            {/* LEFT/MAIN COLUMN (8 cols): Filter Bar + Rolling 7-Day Habit Matrix */}
+            <div className="lg:col-span-8 space-y-4">
+              {/* Filter & Search Control Bar */}
+              <div
+                className={`p-4 rounded-2xl border space-y-3 ${
+                  isDark ? 'bg-slate-900/70 border-slate-800/90' : 'bg-white border-slate-200/90 shadow-sm'
+                }`}
+              >
+                <div className="flex flex-col sm:flex-row gap-3 items-stretch sm:items-center justify-between">
+                  {/* Search Input */}
+                  <div className="relative flex-1">
+                    <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                    <input
+                      type="text"
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      placeholder="Filter habits by title, notes, or tag..."
+                      aria-label="Search habits"
+                      className={`w-full pl-9 pr-8 py-2 rounded-xl border text-sm outline-none transition-colors ${
+                        isDark
+                          ? 'bg-slate-950/90 border-slate-800 text-slate-100 placeholder:text-slate-500 focus:border-indigo-500'
+                          : 'bg-slate-50 border-slate-200 text-slate-900 placeholder:text-slate-400 focus:border-indigo-500'
+                      }`}
+                    />
+                    {searchQuery && (
+                      <button
+                        onClick={() => setSearchQuery('')}
+                        aria-label="Clear search"
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Status Filter Pills */}
+                  <div
+                    className={`flex items-center p-1 rounded-xl border text-xs font-medium ${
+                      isDark ? 'bg-slate-950 border-slate-800' : 'bg-slate-100 border-slate-200'
+                    }`}
+                  >
+                    {[
+                      { id: 'All', label: 'All' },
+                      { id: 'ScheduledToday', label: 'Today' },
+                      { id: 'PendingToday', label: 'Pending' },
+                      { id: 'CompletedToday', label: 'Done' }
+                    ].map((st) => (
+                      <button
+                        key={st.id}
+                        onClick={() => setStatusFilter(st.id)}
+                        className={`px-2.5 py-1.5 rounded-lg transition-all ${
+                          statusFilter === st.id
+                            ? isDark
+                              ? 'bg-slate-800 text-white shadow-sm'
+                              : 'bg-white text-slate-900 shadow-sm'
+                            : isDark
+                            ? 'text-slate-400 hover:text-slate-200'
+                            : 'text-slate-600 hover:text-slate-900'
+                        }`}
+                      >
+                        {st.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Category Tag Chips */}
+                <div className="flex items-center gap-1.5 overflow-x-auto pb-1 no-scrollbar">
+                  <button
+                    onClick={() => setSelectedCategory('All')}
+                    className={`px-3 py-1 rounded-lg text-xs font-medium shrink-0 border transition-all ${
+                      selectedCategory === 'All'
+                        ? 'bg-indigo-500/15 border-indigo-500/40 text-indigo-400'
+                        : isDark
+                        ? 'bg-slate-950/60 border-slate-800 text-slate-400 hover:border-slate-700'
+                        : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100'
+                    }`}
+                  >
+                    All Categories ({enrichedHabits.length})
+                  </button>
+                  {CATEGORIES.map((cat) => {
+                    const count = enrichedHabits.filter((h) => h.category === cat.id).length;
+                    const active = selectedCategory === cat.id;
+                    return (
+                      <button
+                        key={cat.id}
+                        onClick={() => setSelectedCategory(cat.id)}
+                        className={`px-3 py-1 rounded-lg text-xs font-medium shrink-0 border transition-all ${
+                          active
+                            ? 'bg-indigo-500/15 border-indigo-500/40 text-indigo-400'
+                            : isDark
+                            ? 'bg-slate-950/60 border-slate-800 text-slate-400 hover:border-slate-700'
+                            : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100'
+                        }`}
+                      >
+                        {cat.label} ({count})
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Rolling 7-Day Matrix Card */}
+              <div
+                className={`rounded-2xl border overflow-hidden ${
+                  isDark ? 'bg-slate-900/70 border-slate-800/90' : 'bg-white border-slate-200/90 shadow-sm'
+                }`}
+              >
+                {/* Matrix Header with Week Pagination & Status Legend */}
+                <div
+                  className={`px-5 py-4 border-b flex flex-wrap items-center justify-between gap-3 ${
+                    isDark ? 'border-slate-800/90 bg-slate-900/50' : 'border-slate-200/80 bg-slate-50/60'
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <h2 className="font-semibold text-sm sm:text-base">Rolling 7-Day Habit Matrix</h2>
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => setWeekOffset((w) => w - 1)}
+                        aria-label="Previous 7 days"
+                        className={`p-1 rounded-lg border transition-colors ${
+                          isDark
+                            ? 'bg-slate-950 border-slate-800 hover:bg-slate-800 text-slate-300'
+                            : 'bg-white border-slate-200 hover:bg-slate-100 text-slate-700'
+                        }`}
+                      >
+                        <ChevronLeft className="w-4 h-4" />
+                      </button>
+                      <button
+                        onClick={() => setWeekOffset(0)}
+                        disabled={weekOffset === 0}
+                        className={`px-2 py-1 rounded-lg border text-xs font-medium transition-colors ${
+                          weekOffset === 0
+                            ? 'opacity-40 cursor-default'
+                            : isDark
+                            ? 'bg-slate-950 border-slate-800 hover:bg-slate-800 text-slate-200'
+                            : 'bg-white border-slate-200 hover:bg-slate-100 text-slate-700'
+                        }`}
+                      >
+                        Today
+                      </button>
+                      <button
+                        onClick={() => setWeekOffset((w) => Math.min(0, w + 1))}
+                        disabled={weekOffset === 0}
+                        aria-label="Next 7 days"
+                        className={`p-1 rounded-lg border transition-colors ${
+                          weekOffset === 0
+                            ? 'opacity-40 cursor-default'
+                            : isDark
+                            ? 'bg-slate-950 border-slate-800 hover:bg-slate-800 text-slate-300'
+                            : 'bg-white border-slate-200 hover:bg-slate-100 text-slate-700'
+                        }`}
+                      >
+                        <ChevronRight className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Visual Distinction Legend */}
+                  <div className="flex items-center gap-3 text-[11px] font-medium">
+                    <span className="flex items-center gap-1.5">
+                      <span className="w-2.5 h-2.5 rounded-sm bg-emerald-500 inline-block" />
+                      Done
+                    </span>
+                    <span className="flex items-center gap-1.5">
+                      <span className="w-2.5 h-2.5 rounded-sm border border-indigo-400/70 inline-block" />
+                      Scheduled
+                    </span>
+                    <span className="flex items-center gap-1.5">
+                      <span className="w-2.5 h-2.5 rounded-sm bg-rose-500/25 border border-rose-500/50 inline-block" />
+                      Missed
+                    </span>
+                    <span className="flex items-center gap-1.5 text-slate-400">
+                      <Minus className="w-3 h-3" />
+                      Rest Day
+                    </span>
+                  </div>
+                </div>
+
+                {/* Matrix Table */}
+                {filteredHabits.length === 0 ? (
+                  <div className="p-12 text-center space-y-3">
+                    <div className="w-12 h-12 rounded-2xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center mx-auto text-indigo-400">
+                      <Filter className="w-6 h-6" />
+                    </div>
+                    <h3 className="font-semibold text-base">No habits match your current filter</h3>
+                    <p className={`text-xs max-w-sm mx-auto ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+                      Try clearing your search query, switching category filters, or creating a new habit routine.
+                    </p>
+                    <div className="pt-2 flex items-center justify-center gap-2">
+                      <button
+                        onClick={() => {
+                          setSearchQuery('');
+                          setSelectedCategory('All');
+                          setStatusFilter('All');
+                        }}
+                        className="px-3.5 py-1.5 rounded-xl text-xs font-semibold bg-slate-800 text-slate-200 hover:bg-slate-700"
+                      >
+                        Reset Filters
+                      </button>
+                      <button
+                        onClick={handleResetDemoData}
+                        className="px-3.5 py-1.5 rounded-xl text-xs font-semibold border border-indigo-500/40 text-indigo-400 hover:bg-indigo-500/10"
+                      >
+                        Restore Demo Data
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full border-collapse text-left">
+                      <thead>
+                        <tr
+                          className={`border-b text-[11px] uppercase tracking-wider ${
+                            isDark ? 'border-slate-800/80 text-slate-400' : 'border-slate-200/80 text-slate-500'
+                          }`}
+                        >
+                          <th className="py-3.5 pl-5 pr-3 font-semibold min-w-[230px]">Habit & Schedule</th>
+                          <th className="py-3.5 px-2 font-semibold text-center w-24">Streak</th>
+                          {rolling7Days.map((d) => {
+                            const dKey = toDateKey(d);
+                            const isTodayCol = dKey === todayKey;
+                            return (
+                              <th
+                                key={dKey}
+                                className={`py-3 px-1.5 text-center w-12 ${
+                                  isTodayCol ? (isDark ? 'bg-indigo-500/10' : 'bg-indigo-50/80') : ''
+                                }`}
+                              >
+                                <div className="flex flex-col items-center">
+                                  <span className={isTodayCol ? 'text-indigo-400 font-bold' : ''}>
+                                    {DAYS_OF_WEEK[d.getDay()].short}
+                                  </span>
+                                  <span
+                                    className={`text-xs mt-0.5 w-6 h-6 rounded-full flex items-center justify-center ${
+                                      isTodayCol
+                                        ? 'bg-indigo-500 text-white font-bold shadow-sm'
+                                        : isDark
+                                        ? 'text-slate-300'
+                                        : 'text-slate-700'
+                                    }`}
+                                  >
+                                    {d.getDate()}
+                                  </span>
+                                </div>
+                              </th>
+                            );
+                          })}
+                          <th className="py-3.5 pl-2 pr-5 text-right font-semibold w-20">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-800/40">
+                        {filteredHabits.map((habit) => {
+                          const HabitIcon = ICON_MAP[habit.icon] || Sparkles;
+                          const c = habit.colorObj;
+
+                          return (
+                            <tr
+                              key={habit.id}
+                              className={`group transition-colors ${
+                                isDark ? 'hover:bg-slate-800/35' : 'hover:bg-slate-50/90'
+                              }`}
+                            >
+                              {/* Habit Info Cell */}
+                              <td className="py-3.5 pl-5 pr-3">
+                                <div className="flex items-start gap-3">
+                                  <div
+                                    className={`w-9 h-9 rounded-xl ${c.softBg} ${c.border} border flex items-center justify-center shrink-0 mt-0.5`}
+                                  >
+                                    <HabitIcon className={`w-4 h-4 ${c.text}`} />
+                                  </div>
+                                  <div className="min-w-0">
+                                    <div className="flex items-center gap-2 flex-wrap">
+                                      <span className="font-semibold text-sm leading-snug">{habit.title}</span>
+                                      <span
+                                        className={`text-[10px] font-semibold px-2 py-0.5 rounded-md border ${c.softBg} ${c.text} ${c.border}`}
+                                      >
+                                        {habit.category}
+                                      </span>
+                                    </div>
+                                    {habit.description && (
+                                      <p
+                                        className={`text-xs line-clamp-1 mt-0.5 ${
+                                          isDark ? 'text-slate-400' : 'text-slate-500'
+                                        }`}
+                                      >
+                                        {habit.description}
+                                      </p>
+                                    )}
+                                    {/* Mini Day-of-Week Schedule Pills */}
+                                    <div className="flex items-center gap-1 mt-1.5">
+                                      {DAYS_OF_WEEK.map((d) => {
+                                        const activeDay = habit.frequencyDays.includes(d.index);
+                                        return (
+                                          <span
+                                            key={d.index}
+                                            className={`text-[9px] w-4 h-4 rounded flex items-center justify-center font-bold ${
+                                              activeDay
+                                                ? `${c.softBg} ${c.text}`
+                                                : isDark
+                                                ? 'text-slate-600 bg-slate-900'
+                                                : 'text-slate-300 bg-slate-100'
+                                            }`}
+                                          >
+                                            {d.letter}
+                                          </span>
+                                        );
+                                      })}
+                                      <span className={`text-[10px] ml-1.5 ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+                                        • {habit.metrics.completionRate30d}% (30d)
+                                      </span>
+                                    </div>
+                                  </div>
+                                </div>
+                              </td>
+
+                              {/* Streak Counter Cell */}
+                              <td className="py-3.5 px-2 text-center">
+                                <div className="inline-flex flex-col items-center">
+                                  <div className="flex items-center gap-1 font-bold text-sm">
+                                    <Flame
+                                      className={`w-4 h-4 ${
+                                        habit.metrics.currentStreak > 0
+                                          ? 'text-amber-500 fill-amber-500/20'
+                                          : 'text-slate-500'
+                                      }`}
+                                    />
+                                    <span>{habit.metrics.currentStreak}d</span>
+                                  </div>
+                                  <span className={`text-[10px] ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
+                                    Best: {habit.metrics.longestStreak}d
+                                  </span>
+                                </div>
+                              </td>
+
+                              {/* 7 Rolling Day Interactive Toggle Cells */}
+                              {rolling7Days.map((d) => {
+                                const dKey = toDateKey(d);
+                                const dow = d.getDay();
+                                const isTodayCol = dKey === todayKey;
+                                const isPast = dKey < todayKey;
+                                const isScheduled = habit.frequencyDays.includes(dow);
+                                const isCompleted = !!(habit.logs && habit.logs[dKey]);
+                                const isMissed = isPast && isScheduled && !isCompleted;
+
+                                return (
+                                  <td
+                                    key={dKey}
+                                    className={`py-3.5 px-1.5 text-center ${
+                                      isTodayCol ? (isDark ? 'bg-indigo-500/10' : 'bg-indigo-50/70') : ''
+                                    }`}
+                                  >
+                                    <button
+                                      type="button"
+                                      role="checkbox"
+                                      aria-checked={isCompleted}
+                                      aria-label={`${habit.title} on ${dKey} (${
+                                        isCompleted
+                                          ? 'Completed'
+                                          : isMissed
+                                          ? 'Missed scheduled day'
+                                          : isScheduled
+                                          ? 'Scheduled'
+                                          : 'Unscheduled rest day'
+                                      })`}
+                                      onClick={(e) => handleToggleHabitDay(habit.id, dKey, e)}
+                                      className={`w-8 h-8 rounded-xl mx-auto flex items-center justify-center transition-all duration-150 active:scale-75 focus:outline-none focus:ring-2 focus:ring-indigo-500 ${
+                                        isCompleted
+                                          ? `${c.bg} text-white shadow-md`
+                                          : isMissed
+                                          ? 'bg-rose-500/15 border border-rose-500/40 text-rose-400 hover:bg-rose-500/25'
+                                          : isScheduled
+                                          ? isDark
+                                            ? 'bg-slate-950 border-2 border-slate-700 hover:border-indigo-400 text-transparent'
+                                            : 'bg-white border-2 border-slate-300 hover:border-indigo-500 text-transparent'
+                                          : isDark
+                                          ? 'bg-slate-950/40 border border-dashed border-slate-800 text-slate-600 hover:border-slate-700'
+                                          : 'bg-slate-50 border border-dashed border-slate-200 text-slate-300 hover:border-slate-300'
+                                      }`}
+                                    >
+                                      {isCompleted ? (
+                                        <Check className="w-4 h-4 stroke-[3]" />
+                                      ) : isMissed ? (
+                                        <X className="w-3.5 h-3.5 stroke-[2.5]" />
+                                      ) : !isScheduled ? (
+                                        <Minus className="w-3 h-3" />
+                                      ) : null}
+                                    </button>
+                                  </td>
+                                );
+                              })}
+
+                              {/* Edit & Delete Actions Cell */}
+                              <td className="py-3.5 pl-2 pr-5 text-right">
+                                <div className="flex items-center justify-end gap-1 opacity-80 group-hover:opacity-100">
+                                  <button
+                                    onClick={() => {
+                                      setEditingHabit(habit);
+                                      setIsHabitModalOpen(true);
+                                    }}
+                                    aria-label={`Edit ${habit.title}`}
+                                    title="Edit habit"
+                                    className={`p-1.5 rounded-lg transition-colors ${
+                                      isDark
+                                        ? 'hover:bg-slate-800 text-slate-400 hover:text-slate-200'
+                                        : 'hover:bg-slate-200/70 text-slate-500 hover:text-slate-800'
+                                    }`}
+                                  >
+                                    <Edit3 className="w-4 h-4" />
+                                  </button>
+                                  <button
+                                    onClick={() => setHabitToDelete(habit)}
+                                    aria-label={`Delete ${habit.title}`}
+                                    title="Delete habit"
+                                    className={`p-1.5 rounded-lg transition-colors ${
+                                      isDark
+                                        ? 'hover:bg-rose-500/20 text-slate-400 hover:text-rose-400'
+                                        : 'hover:bg-rose-50 text-slate-500 hover:text-rose-600'
+                                    }`}
+                                  >
+                                    <Trash2 className="w-4 h-4" />
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* RIGHT COLUMN (4 cols): Today's Action Focus List + Rolling 7-Day Bar Chart */}
+            <div className="lg:col-span-4 space-y-6">
+              {/* Today's Action Focus Panel */}
+              <div
+                className={`p-5 rounded-2xl border space-y-4 ${
+                  isDark ? 'bg-slate-900/70 border-slate-800/90' : 'bg-white border-slate-200/90 shadow-sm'
+                }`}
+              >
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h2 className="font-semibold text-base flex items-center gap-2">
+                      <Zap className="w-4 h-4 text-amber-500" />
+                      Today&apos;s Action Focus
+                    </h2>
+                    <p className={`text-xs ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+                      {today.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })}
+                    </p>
+                  </div>
+                  <span className="text-xs font-bold px-2.5 py-1 rounded-full bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
+                    {dashboardKPIs.completedScheduledToday}/{dashboardKPIs.todayTotalTarget} Done
+                  </span>
+                </div>
+
+                <div className="space-y-2.5">
+                  {enrichedHabits
+                    .filter((h) => h.isScheduledToday)
+                    .map((habit) => {
+                      const c = habit.colorObj;
+                      const done = habit.isCompletedToday;
+                      return (
+                        <div
+                          key={habit.id}
+                          onClick={(e) => handleToggleHabitDay(habit.id, todayKey, e)}
+                          role="button"
+                          tabIndex={0}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault();
+                              handleToggleHabitDay(habit.id, todayKey, e);
+                            }
+                          }}
+                          className={`p-3 rounded-xl border flex items-center justify-between gap-3 cursor-pointer select-none transition-all ${
+                            done
+                              ? isDark
+                                ? 'bg-emerald-950/25 border-emerald-500/30 text-slate-300'
+                                : 'bg-emerald-50/70 border-emerald-200 text-slate-700'
+                              : isDark
+                              ? 'bg-slate-950/70 border-slate-800 hover:border-slate-700'
+                              : 'bg-slate-50/80 border-slate-200 hover:border-slate-300'
+                          }`}
+                        >
+                          <div className="flex items-center gap-3 min-w-0">
+                            <div
+                              className={`w-6 h-6 rounded-lg flex items-center justify-center transition-transform ${
+                                done
+                                  ? `${c.bg} text-white scale-105 shadow-sm`
+                                  : isDark
+                                  ? 'border-2 border-slate-700 bg-slate-900'
+                                  : 'border-2 border-slate-300 bg-white'
+                              }`}
+                            >
+                              {done && <Check className="w-3.5 h-3.5 stroke-[3]" />}
+                            </div>
+                            <div className="min-w-0">
+                              <p
+                                className={`text-xs sm:text-sm font-medium truncate ${
+                                  done ? 'line-through opacity-60' : ''
+                                }`}
+                              >
+                                {habit.title}
+                              </p>
+                              <span className={`text-[11px] ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+                                {habit.category} • {habit.metrics.currentStreak}d streak
+                              </span>
+                            </div>
+                          </div>
+                          <span
+                            className={`text-[11px] font-semibold px-2 py-0.5 rounded-md shrink-0 ${
+                              done
+                                ? 'bg-emerald-500/20 text-emerald-400'
+                                : isDark
+                                ? 'bg-slate-800 text-slate-400'
+                                : 'bg-slate-200/70 text-slate-600'
+                            }`}
+                          >
+                            {done ? 'Logged' : 'Due'}
+                          </span>
+                        </div>
+                      );
+                    })}
+                </div>
+              </div>
+
+              {/* Rolling 7-Day Completion Bar Chart */}
+              <div
+                className={`p-5 rounded-2xl border space-y-4 ${
+                  isDark ? 'bg-slate-900/70 border-slate-800/90' : 'bg-white border-slate-200/90 shadow-sm'
+                }`}
+              >
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h2 className="font-semibold text-base">Rolling 7-Day Velocity</h2>
+                    <p className={`text-xs ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+                      Daily completion % against scheduled targets
+                    </p>
+                  </div>
+                  <BarChart3 className="w-4 h-4 text-indigo-400" />
+                </div>
+
+                {/* Custom Responsive Bar Chart */}
+                <div className="pt-4 pb-1">
+                  <div className="h-44 flex items-end justify-between gap-2 px-1">
+                    {rolling7DayChartData.map((day) => {
+                      const barHeight = Math.max(8, day.percentage);
+                      return (
+                        <div key={day.dateKey} className="flex-1 flex flex-col items-center gap-2 group relative">
+                          {/* Tooltip on Hover */}
+                          <div
+                            className={`opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity absolute -top-9 px-2 py-1 rounded-lg text-[10px] font-bold whitespace-nowrap shadow-lg z-10 ${
+                              isDark ? 'bg-slate-800 text-white border border-slate-700' : 'bg-slate-900 text-white'
+                            }`}
+                          >
+                            {day.completedCount}/{day.scheduledCount} ({day.percentage}%)
+                          </div>
+
+                          <span className={`text-[10px] font-semibold ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+                            {day.percentage}%
+                          </span>
+
+                          {/* Bar Track */}
+                          <div
+                            className={`w-full max-w-[34px] h-28 rounded-xl p-1 flex items-end overflow-hidden ${
+                              isDark ? 'bg-slate-950 border border-slate-800/80' : 'bg-slate-100 border border-slate-200/70'
+                            }`}
+                          >
+                            <div
+                              style={{ height: `${barHeight}%` }}
+                              className={`w-full rounded-lg transition-all duration-500 ${
+                                day.percentage === 100
+                                  ? 'bg-gradient-to-t from-emerald-600 to-emerald-400'
+                                  : day.isToday
+                                  ? 'bg-gradient-to-t from-indigo-600 to-indigo-400'
+                                  : 'bg-gradient-to-t from-indigo-600/70 to-violet-500/70'
+                              }`}
+                            />
+                          </div>
+
+                          {/* X-Axis Day Label */}
+                          <div className="text-center">
+                            <span
+                              className={`block text-[11px] font-bold ${
+                                day.isToday ? 'text-indigo-400' : isDark ? 'text-slate-300' : 'text-slate-700'
+                              }`}
+                            >
+                              {day.dayShort}
+                            </span>
+                            <span className="block text-[10px] text-slate-500">{day.dayNum}</span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ===================================================================
+            TAB 2: 28-DAY CONSISTENCY HEATMAP & CATEGORY ANALYTICS
+        =================================================================== */}
+        {activeTab === 'analytics' && (
+          <div className="space-y-6">
+            {/* 28-Day Habit Heat-Strip Matrix */}
+            <div
+              className={`p-6 rounded-2xl border space-y-5 ${
+                isDark ? 'bg-slate-900/70 border-slate-800/90' : 'bg-white border-slate-200/90 shadow-sm'
+              }`}
+            >
+              <div className="flex flex-wrap items-center justify-between gap-4">
+                <div>
+                  <h2 className="text-lg font-bold">28-Day Behavioral Consistency Heat-Strip</h2>
+                  <p className={`text-xs ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+                    Click any cell in the past 28 days to retroactively toggle completion state. Unscheduled rest days are dimmed.
+                  </p>
+                </div>
+                <div className="flex items-center gap-3 text-xs">
+                  <span className="flex items-center gap-1.5">
+                    <span className="w-3 h-3 rounded bg-emerald-500 inline-block" /> Completed
+                  </span>
+                  <span className="flex items-center gap-1.5">
+                    <span className="w-3 h-3 rounded bg-rose-500/30 border border-rose-500/50 inline-block" /> Missed Target
+                  </span>
+                  <span className="flex items-center gap-1.5">
+                    <span className="w-3 h-3 rounded bg-slate-800 border border-slate-700 inline-block" /> Rest Day
+                  </span>
+                </div>
+              </div>
+
+              <div className="overflow-x-auto pb-2">
+                <div className="min-w-[820px] space-y-3">
+                  {/* Date Header Row */}
+                  <div className="grid grid-cols-[220px_repeat(28,minmax(0,1fr))_80px] gap-1 items-center text-[10px] font-semibold text-slate-400">
+                    <div>Habit</div>
+                    {rolling28Days.map((d) => (
+                      <div key={toDateKey(d)} className="text-center" title={toDateKey(d)}>
+                        {d.getDate()}
+                      </div>
+                    ))}
+                    <div className="text-right">30d Rate</div>
+                  </div>
+
+                  {/* Habit Heat-Strip Rows */}
+                  {enrichedHabits.map((habit) => {
+                    const c = habit.colorObj;
+                    return (
+                      <div
+                        key={habit.id}
+                        className="grid grid-cols-[220px_repeat(28,minmax(0,1fr))_80px] gap-1 items-center py-1.5"
+                      >
+                        <div className="pr-3 truncate text-xs font-semibold flex items-center gap-2">
+                          <span className={`w-2 h-2 rounded-full ${c.bg} shrink-0`} />
+                          <span className="truncate">{habit.title}</span>
+                        </div>
+                        {rolling28Days.map((d) => {
+                          const key = toDateKey(d);
+                          const isSched = habit.frequencyDays.includes(d.getDay());
+                          const isDone = !!(habit.logs && habit.logs[key]);
+                          const isMissed = key < todayKey && isSched && !isDone;
+                          return (
+                            <button
+                              key={key}
+                              onClick={(e) => handleToggleHabitDay(habit.id, key, e)}
+                              title={`${habit.title} • ${key}: ${
+                                isDone ? 'Completed' : isMissed ? 'Missed' : isSched ? 'Scheduled' : 'Rest Day'
+                              }`}
+                              className={`h-6 rounded-md transition-all hover:scale-110 ${
+                                isDone
+                                  ? `${c.bg} shadow-sm`
+                                  : isMissed
+                                  ? 'bg-rose-500/20 border border-rose-500/40'
+                                  : isSched
+                                  ? isDark
+                                    ? 'bg-slate-800 border border-slate-700'
+                                    : 'bg-slate-200 border border-slate-300'
+                                  : isDark
+                                  ? 'bg-slate-950/60 opacity-40'
+                                  : 'bg-slate-100 opacity-50'
+                              }`}
+                            />
+                          );
+                        })}
+                        <div className="text-right text-xs font-bold">{habit.metrics.completionRate30d}%</div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+
+            {/* Category Breakdown & Streak Leaderboard */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {/* Category Adherence Breakdown */}
+              <div
+                className={`p-6 rounded-2xl border space-y-4 ${
+                  isDark ? 'bg-slate-900/70 border-slate-800/90' : 'bg-white border-slate-200/90 shadow-sm'
+                }`}
+              >
+                <h3 className="font-bold text-base flex items-center gap-2">
+                  <Layers className="w-4 h-4 text-indigo-400" />
+                  Category Adherence Breakdown (30 Days)
+                </h3>
+                <div className="space-y-3.5">
+                  {CATEGORIES.map((cat) => {
+                    const catHabits = enrichedHabits.filter((h) => h.category === cat.id);
+                    const avgRate =
+                      catHabits.length > 0
+                        ? Math.round(
+                            catHabits.reduce((acc, h) => acc + h.metrics.completionRate30d, 0) / catHabits.length
+                          )
+                        : 0;
+                    return (
+                      <div key={cat.id} className="space-y-1.5">
+                        <div className="flex items-center justify-between text-xs">
+                          <span className="font-semibold">
+                            {cat.label}{' '}
+                            <span className="text-slate-400 font-normal">({catHabits.length} habits)</span>
+                          </span>
+                          <span className="font-bold">{catHabits.length ? `${avgRate}%` : 'N/A'}</span>
+                        </div>
+                        <div
+                          className={`w-full h-2.5 rounded-full overflow-hidden ${
+                            isDark ? 'bg-slate-950' : 'bg-slate-100'
+                          }`}
+                        >
+                          <div
+                            style={{ width: `${avgRate}%` }}
+                            className="h-full rounded-full bg-gradient-to-r from-indigo-500 to-emerald-500 transition-all duration-500"
+                          />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Habit Streak Leaderboard */}
+              <div
+                className={`p-6 rounded-2xl border space-y-4 ${
+                  isDark ? 'bg-slate-900/70 border-slate-800/90' : 'bg-white border-slate-200/90 shadow-sm'
+                }`}
+              >
+                <h3 className="font-bold text-base flex items-center gap-2">
+                  <Award className="w-4 h-4 text-amber-400" />
+                  Active vs. Record Streak Comparison
+                </h3>
+                <div className="space-y-3">
+                  {[...enrichedHabits]
+                    .sort((a, b) => b.metrics.currentStreak - a.metrics.currentStreak)
+                    .map((h) => {
+                      const ratio =
+                        h.metrics.longestStreak > 0
+                          ? Math.min(100, Math.round((h.metrics.currentStreak / h.metrics.longestStreak) * 100))
+                          : 0;
+                      return (
+                        <div
+                          key={h.id}
+                          className={`p-3 rounded-xl border ${
+                            isDark ? 'bg-slate-950/60 border-slate-800' : 'bg-slate-50 border-slate-200/80'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between text-xs mb-1.5">
+                            <span className="font-semibold truncate pr-2">{h.title}</span>
+                            <span className="shrink-0 font-bold text-amber-400">
+                              {h.metrics.currentStreak}d current / {h.metrics.longestStreak}d record
+                            </span>
+                          </div>
+                          <div
+                            className={`w-full h-2 rounded-full overflow-hidden ${
+                              isDark ? 'bg-slate-800' : 'bg-slate-200'
+                            }`}
+                          >
+                            <div
+                              style={{ width: `${ratio}%` }}
+                              className={`h-full rounded-full ${h.colorObj.bg} transition-all duration-500`}
+                            />
+                          </div>
+                        </div>
+                      );
+                    })}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ===================================================================
+            TAB 3: SYSTEM ARCHITECTURE & DESIGN TOKENS SPECIFICATION
+        =================================================================== */}
+        {activeTab === 'architecture' && (
+          <div className="space-y-6">
+            <div
+              className={`p-6 rounded-2xl border space-y-6 ${
+                isDark ? 'bg-slate-900/70 border-slate-800/90' : 'bg-white border-slate-200/90 shadow-sm'
+              }`}
+            >
+              <div className="border-b pb-4 border-slate-800/60">
+                <h2 className="text-xl font-bold flex items-center gap-2.5">
+                  <Terminal className="w-5 h-5 text-indigo-400" />
+                  Principal Frontend Architecture & Design System Specification
+                </h2>
+                <p className={`text-sm mt-1 ${isDark ? 'text-slate-400' : 'text-slate-600'}`}>
+                  Complete modular breakdown of component hierarchy, persistent state schema, schedule-aware streak algorithm, and WCAG AA design tokens.
+                </p>
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                {/* 1. Component Breakdown */}
+                <div
+                  className={`p-5 rounded-xl border space-y-3 ${
+                    isDark ? 'bg-slate-950/70 border-slate-800' : 'bg-slate-50 border-slate-200'
+                  }`}
+                >
+                  <h3 className="font-bold text-sm text-indigo-400 uppercase tracking-wider">
+                    1. Modular Component Hierarchy
+                  </h3>
+                  <ul className="text-xs space-y-2.5 leading-relaxed">
+                    <li>
+                      <strong>&lt;App /&gt; (State & Persistence Root)</strong>: Manages localStorage synchronization, optimistic UI updates, keyboard shortcuts (<code>N</code>, <code>T</code>, <code>1-3</code>), and JSON backup import/export.
+                    </li>
+                    <li>
+                      <strong>&lt;KPISummaryStrip /&gt;</strong>: Computes real-time daily radial progress ring, best active streak, personal record streak, and 30-day schedule-adjusted adherence.
+                    </li>
+                    <li>
+                      <strong>&lt;RollingMatrixGrid /&gt;</strong>: 7-day rolling interactive grid with visual states for <em>Completed</em>, <em>Scheduled</em>, <em>Missed</em>, and <em>Rest Day</em>.
+                    </li>
+                    <li>
+                      <strong>&lt;TodayFocusPanel /&gt; &amp; &lt;VelocityBarChart /&gt;</strong>: Focused daily execution list paired with a 7-day percentage bar chart.
+                    </li>
+                    <li>
+                      <strong>&lt;ConfettiCanvas /&gt; &amp; SoundEngine</strong>: Zero-dependency HTML5 Canvas 2D particle physics + Web Audio API harmonic synthesizer.
+                    </li>
+                  </ul>
+                </div>
+
+                {/* 2. State Schema & Schedule-Aware Streak Algorithm */}
+                <div
+                  className={`p-5 rounded-xl border space-y-3 ${
+                    isDark ? 'bg-slate-950/70 border-slate-800' : 'bg-slate-50 border-slate-200'
+                  }`}
+                >
+                  <h3 className="font-bold text-sm text-emerald-400 uppercase tracking-wider">
+                    2. State Schema &amp; Streak Algorithm
+                  </h3>
+                  <pre
+                    className={`p-3 rounded-lg text-[11px] font-mono overflow-x-auto ${
+                      isDark ? 'bg-slate-900 text-slate-300' : 'bg-slate-900 text-slate-100'
+                    }`}
+                  >
+{`interface Habit {
+  id: string;
+  title: string;
+  description: string;
+  category: CategoryId;
+  color: ColorTokenId;
+  icon: LucideIconName;
+  frequencyDays: number[]; // [0..6] Sun-Sat
+  logs: Record<YYYY_MM_DD, boolean>;
+  createdAt: YYYY_MM_DD;
+}`}
+                  </pre>
+                  <p className={`text-xs leading-relaxed ${isDark ? 'text-slate-300' : 'text-slate-600'}`}>
+                    <strong>Streak Preservation Rule:</strong> Iterates backward from <code>today</code>. If a day is in <code>frequencyDays</code> and uncompleted in the past, the streak terminates. Unscheduled rest days are bridged transparently so Mon/Wed/Fri habits maintain unbroken streaks.
+                  </p>
+                </div>
+
+                {/* 3. Design System Tokens */}
+                <div
+                  className={`p-5 rounded-xl border space-y-3 ${
+                    isDark ? 'bg-slate-950/70 border-slate-800' : 'bg-slate-50 border-slate-200'
+                  }`}
+                >
+                  <h3 className="font-bold text-sm text-amber-400 uppercase tracking-wider flex items-center gap-1.5">
+                    <Palette className="w-4 h-4" />
+                    3. Semantic Design Tokens
+                  </h3>
+                  <div className="space-y-2 text-xs">
+                    <div className="flex items-center justify-between py-1 border-b border-slate-800/40">
+                      <span>Surface Canvas (Dark / Light)</span>
+                      <code className="font-mono text-[11px]">slate-950 / slate-50</code>
+                    </div>
+                    <div className="flex items-center justify-between py-1 border-b border-slate-800/40">
+                      <span>Elevated Card Surface</span>
+                      <code className="font-mono text-[11px]">slate-900/70 / white</code>
+                    </div>
+                    <div className="flex items-center justify-between py-1 border-b border-slate-800/40">
+                      <span>Hairline Border Token</span>
+                      <code className="font-mono text-[11px]">1px slate-800 / slate-200</code>
+                    </div>
+                    <div className="pt-2">
+                      <span className="block mb-2 font-semibold">High-Contrast Habit Marker Palette:</span>
+                      <div className="grid grid-cols-3 gap-2">
+                        {COLOR_PALETTE.map((col) => (
+                          <div
+                            key={col.id}
+                            className="flex items-center gap-2 p-1.5 rounded-lg border border-slate-800/50"
+                          >
+                            <span className={`w-3.5 h-3.5 rounded-md ${col.bg}`} />
+                            <span className="text-[11px] font-medium">{col.name}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+      </main>
+
+      {/* =====================================================================
+          CREATE / EDIT HABIT MODAL
+      ===================================================================== */}
+      {isHabitModalOpen && (
+        <HabitFormModal
+          isDark={isDark}
+          initialHabit={editingHabit}
+          onClose={() => {
+            setIsHabitModalOpen(false);
+            setEditingHabit(null);
+          }}
+          onSave={handleSaveHabit}
+        />
+      )}
+
+      {/* =====================================================================
+          DELETE CONFIRMATION MODAL (No native alert/confirm)
+      ===================================================================== */}
+      {habitToDelete && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="delete-modal-title"
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/75 backdrop-blur-sm"
+        >
+          <div
+            className={`w-full max-w-md rounded-2xl border p-6 shadow-2xl space-y-4 ${
+              isDark ? 'bg-slate-900 border-slate-800 text-slate-100' : 'bg-white border-slate-200 text-slate-900'
+            }`}
+          >
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-rose-500/15 border border-rose-500/30 flex items-center justify-center text-rose-500 shrink-0">
+                <AlertTriangle className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 id="delete-modal-title" className="font-bold text-base">
+                  Delete Habit Routine?
+                </h3>
+                <p className={`text-xs ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+                  This action will permanently remove &ldquo;{habitToDelete.title}&rdquo; and its streak history.
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                onClick={() => setHabitToDelete(null)}
+                className={`px-4 py-2 rounded-xl text-xs font-semibold border ${
+                  isDark
+                    ? 'bg-slate-800 border-slate-700 text-slate-200 hover:bg-slate-700'
+                    : 'bg-slate-100 border-slate-200 text-slate-700 hover:bg-slate-200'
+                }`}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleConfirmDelete}
+                className="px-4 py-2 rounded-xl text-xs font-semibold bg-rose-600 hover:bg-rose-500 text-white shadow-lg shadow-rose-600/25"
+              >
+                Delete Habit
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * ============================================================================
+ * ACCESSIBLE HABIT CREATE / EDIT MODAL COMPONENT
+ * ============================================================================
+ */
+function HabitFormModal({ isDark, initialHabit, onClose, onSave }) {
+  const [title, setTitle] = useState(initialHabit?.title || '');
+  const [description, setDescription] = useState(initialHabit?.description || '');
+  const [category, setCategory] = useState(initialHabit?.category || 'Deep Work');
+  const [color, setColor] = useState(initialHabit?.color || 'indigo');
+  const [icon, setIcon] = useState(initialHabit?.icon || 'Brain');
+  const [frequencyDays, setFrequencyDays] = useState(
+    initialHabit?.frequencyDays || [1, 2, 3, 4, 5]
+  );
+  const [error, setError] = useState('');
+
+  const toggleDay = (dayIdx) => {
+    setFrequencyDays((prev) =>
+      prev.includes(dayIdx) ? prev.filter((d) => d !== dayIdx) : [...prev, dayIdx].sort()
+    );
+  };
+
+  const applyPreset = (daysArray) => {
+    setFrequencyDays(daysArray);
+  };
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    if (!title.trim()) {
+      setError('Please enter a habit title.');
+      return;
+    }
+    if (frequencyDays.length === 0) {
+      setError('Select at least one scheduled day per week.');
+      return;
+    }
+    onSave({
+      title: title.trim(),
+      description: description.trim(),
+      category,
+      color,
+      icon,
+      frequencyDays
+    });
+  };
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="habit-modal-title"
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/75 backdrop-blur-sm overflow-y-auto"
+    >
+      <div
+        className={`w-full max-w-lg rounded-2xl border p-6 shadow-2xl space-y-5 my-8 ${
+          isDark ? 'bg-slate-900 border-slate-800 text-slate-100' : 'bg-white border-slate-200 text-slate-900'
+        }`}
+      >
+        <div className="flex items-center justify-between border-b pb-3 border-slate-800/60">
+          <h2 id="habit-modal-title" className="text-lg font-bold">
+            {initialHabit ? 'Edit Habit Routine' : 'Create New Habit Routine'}
+          </h2>
+          <button
+            onClick={onClose}
+            aria-label="Close modal"
+            className="p-1.5 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-slate-800/50"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="space-y-4">
+          {error && (
+            <div className="p-3 rounded-xl bg-rose-500/15 border border-rose-500/30 text-rose-400 text-xs font-medium">
+              {error}
+            </div>
+          )}
+
+          {/* Habit Title */}
+          <div>
+            <label className="block text-xs font-semibold uppercase tracking-wider mb-1.5">
+              Habit Title *
+            </label>
+            <input
+              type="text"
+              value={title}
+              onChange={(e) => {
+                setTitle(e.target.value);
+                setError('');
+              }}
+              placeholder="e.g., 60m System Design Study"
+              autoFocus
+              className={`w-full px-3.5 py-2.5 rounded-xl border text-sm outline-none ${
+                isDark
+                  ? 'bg-slate-950 border-slate-800 text-slate-100 focus:border-indigo-500'
+                  : 'bg-slate-50 border-slate-200 text-slate-900 focus:border-indigo-500'
+              }`}
+            />
+          </div>
+
+          {/* Description / Notes */}
+          <div>
+            <label className="block text-xs font-semibold uppercase tracking-wider mb-1.5">
+              Implementation Intention / Notes
+            </label>
+            <input
+              type="text"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="When, where, and how will you execute this habit?"
+              className={`w-full px-3.5 py-2 rounded-xl border text-sm outline-none ${
+                isDark
+                  ? 'bg-slate-950 border-slate-800 text-slate-100 focus:border-indigo-500'
+                  : 'bg-slate-50 border-slate-200 text-slate-900 focus:border-indigo-500'
+              }`}
+            />
+          </div>
+
+          {/* Category & Icon Selector */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-semibold uppercase tracking-wider mb-1.5">
+                Category Tag
+              </label>
+              <select
+                value={category}
+                onChange={(e) => setCategory(e.target.value)}
+                className={`w-full px-3 py-2.5 rounded-xl border text-sm outline-none ${
+                  isDark
+                    ? 'bg-slate-950 border-slate-800 text-slate-100'
+                    : 'bg-slate-50 border-slate-200 text-slate-900'
+                }`}
+              >
+                {CATEGORIES.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold uppercase tracking-wider mb-1.5">
+                Icon Marker
+              </label>
+              <div className="flex items-center gap-1.5 flex-wrap">
+                {['Brain', 'Dumbbell', 'Sparkles', 'BookOpen', 'Heart', 'Code', 'Coffee', 'Zap'].map(
+                  (iconKey) => {
+                    const IconComp = ICON_MAP[iconKey];
+                    const selected = icon === iconKey;
+                    return (
+                      <button
+                        type="button"
+                        key={iconKey}
+                        onClick={() => setIcon(iconKey)}
+                        className={`p-2 rounded-xl border transition-all ${
+                          selected
+                            ? 'bg-indigo-500/20 border-indigo-500 text-indigo-400'
+                            : isDark
+                            ? 'bg-slate-950 border-slate-800 text-slate-400 hover:border-slate-700'
+                            : 'bg-slate-50 border-slate-200 text-slate-600 hover:border-slate-300'
+                        }`}
+                      >
+                        <IconComp className="w-4 h-4" />
+                      </button>
+                    );
+                  }
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Color Marker Swatches */}
+          <div>
+            <label className="block text-xs font-semibold uppercase tracking-wider mb-1.5">
+              Color Marker
+            </label>
+            <div className="flex items-center gap-2.5">
+              {COLOR_PALETTE.map((c) => (
+                <button
+                  type="button"
+                  key={c.id}
+                  onClick={() => setColor(c.id)}
+                  aria-label={c.name}
+                  className={`w-8 h-8 rounded-xl ${c.bg} flex items-center justify-center transition-transform ${
+                    color === c.id ? 'scale-110 ring-2 ring-offset-2 ring-indigo-400 ring-offset-slate-900' : 'opacity-70 hover:opacity-100'
+                  }`}
+                >
+                  {color === c.id && <Check className="w-4 h-4 text-white stroke-[3]" />}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Weekly Frequency Target */}
+          <div>
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="text-xs font-semibold uppercase tracking-wider">
+                Scheduled Days ({frequencyDays.length}d / week)
+              </label>
+              <div className="flex items-center gap-1.5 text-[11px]">
+                <button
+                  type="button"
+                  onClick={() => applyPreset([0, 1, 2, 3, 4, 5, 6])}
+                  className="px-2 py-0.5 rounded bg-indigo-500/15 text-indigo-400 hover:bg-indigo-500/25 font-medium"
+                >
+                  Daily
+                </button>
+                <button
+                  type="button"
+                  onClick={() => applyPreset([1, 2, 3, 4, 5])}
+                  className="px-2 py-0.5 rounded bg-indigo-500/15 text-indigo-400 hover:bg-indigo-500/25 font-medium"
+                >
+                  Weekdays
+                </button>
+                <button
+                  type="button"
+                  onClick={() => applyPreset([0, 6])}
+                  className="px-2 py-0.5 rounded bg-indigo-500/15 text-indigo-400 hover:bg-indigo-500/25 font-medium"
+                >
+                  Weekends
+                </button>
+              </div>
+            </div>
+            <div className="grid grid-cols-7 gap-2">
+              {DAYS_OF_WEEK.map((d) => {
+                const active = frequencyDays.includes(d.index);
+                return (
+                  <button
+                    type="button"
+                    key={d.index}
+                    onClick={() => toggleDay(d.index)}
+                    className={`py-2.5 rounded-xl border text-xs font-bold transition-all ${
+                      active
+                        ? 'bg-indigo-600 border-indigo-500 text-white shadow-sm'
+                        : isDark
+                        ? 'bg-slate-950 border-slate-800 text-slate-400 hover:border-slate-700'
+                        : 'bg-slate-50 border-slate-200 text-slate-600 hover:border-slate-300'
+                    }`}
+                  >
+                    {d.short}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Modal Footer */}
+          <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-800/60">
+            <button
+              type="button"
+              onClick={onClose}
+              className={`px-4 py-2 rounded-xl text-xs font-semibold border ${
+                isDark
+                  ? 'bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700'
+                  : 'bg-slate-100 border-slate-200 text-slate-700 hover:bg-slate-200'
+              }`}
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              className="px-5 py-2 rounded-xl text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-600/25"
+            >
+              {initialHabit ? 'Save Changes' : 'Create Habit'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
